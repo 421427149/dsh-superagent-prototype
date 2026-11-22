@@ -1,9 +1,9 @@
 /** Execution status view (active Tickets and pause control) and Execution settings group (Executor capacity and workspace environment). */
-import { useRef, useState } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import { TICKET_FILTERS, type TicketFilter } from '../app/api.ts'
 import { LIMITS } from '../limits.ts'
 import { usePoll, type SettingsView, type SourceView, type StateView } from './api.ts'
-import { DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
+import { Button, DisclosureRow, Icon, InfoTip, Input, Pill, Switch } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
@@ -72,9 +72,57 @@ function EnvironmentVariables({ groups, sources,
     </div>
   </DisclosureRow>
 }
+/** Per-role tool injection: one switch row per tool name for the main and Executor Sessions, plus manually added extra names. */
+function ToolInjectionSettings({ availableTools }: { availableTools: string[] }) {
+  const { t } = usePanel()
+  const { blocks } = useSettings().settings
+  const { value: saved, revision } = blocks.tools
+  const draft = useBlockDraft('tools', saved, revision)
+  const value = draft.value
+  const edit = (next: Partial<typeof value>) => draft.edit({ ...value, ...next })
+  const [extra, setExtra] = useState('')
+  const names = [...new Set([...availableTools, ...value.router, ...value.worker])].sort()
+  const toggle = (role: 'router' | 'worker', name: string, on: boolean) => {
+    const next = new Set(value[role])
+    if (on) next.add(name); else next.delete(name)
+    edit({ [role]: [...next] })
+  }
+  const add = (event: FormEvent) => {
+    event.preventDefault()
+    const name = extra.trim()
+    if (!/^[A-Za-z0-9._:-]+$/.test(name)) return
+    const worker = new Set(value.worker)
+    worker.add(name)
+    edit({ worker: [...worker] })
+    setExtra('')
+  }
+  return <form className="dt-form" onSubmit={event => { void draft.submit(event) }}>
+    <div className="dt-form dt-block">
+      <h2 className="dt-block-title">{t('toolsTitle')}<InfoTip text={t('toolsIntro')} /></h2>
+      <p className="dt-hint">{t('toolsHint')}</p>
+      <table className="dt-table">
+        <thead><tr><th>{t('toolsName')}</th><th>{t('toolsRouter')}</th><th>{t('toolsWorker')}</th></tr></thead>
+        <tbody>{names.map(name => <tr key={name}>
+          <td className="dt-mono">{name}</td>
+          <td><Switch checked={value.router.includes(name)} onChange={on => toggle('router', name, on)}
+            label={`${name} · ${t('toolsRouter')}`} /></td>
+          <td><Switch checked={value.worker.includes(name)} onChange={on => toggle('worker', name, on)}
+            label={`${name} · ${t('toolsWorker')}`} /></td>
+        </tr>)}</tbody>
+      </table>
+      <div className="dt-field">
+        <span className="dt-field-head">{t('toolsAdd')}</span>
+        <Input className="dt-mono" value={extra} placeholder={t('toolsAddPlaceholder')} spellCheck={false}
+          onChange={event => setExtra(event.target.value)} />
+        <Button variant="ghost" size="sm" icon={<Icon name="plus" />} onClick={add}>{t('toolsAddButton')}</Button>
+      </div>
+    </div>
+    <SaveBar {...draft} onDiscard={draft.discard} />
+  </form>
+}
 export function ExecutionSettings() {
   const { t } = usePanel()
-  const { blocks, environment, sources } = useSettings().settings
+  const { availableTools, blocks, environment, sources } = useSettings().settings
   // Keep raw user text (such as separators between blocked commands) in the draft and parse only on save.
   const executor = blocks.executor.value
   const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' ') }
@@ -122,6 +170,7 @@ export function ExecutionSettings() {
       </Fields>
       <SaveBar {...draft} onDiscard={draft.discard} />
     </form>
-    <ConfigHistory blocks={['executor', 'pause']} />
+    <ToolInjectionSettings availableTools={availableTools} />
+    <ConfigHistory blocks={['executor', 'pause', 'tools']} />
   </div>
 }

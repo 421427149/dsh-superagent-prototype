@@ -260,7 +260,9 @@ export class Sessions {
     const register = this.registerTool(agent, binding)
     for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
-      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
+      const parent = scopeParentOf(agent)
+      const injected = host.store.settings().tools.router.filter(name => agent.ctx.tools.get(name, parent))
+      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill', ...injected] }),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
     } else {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.
@@ -289,11 +291,26 @@ export class Sessions {
   private workOnly(agent: Agent, ticketId: string): (() => void)[] {
     const store = this.host.store
     const parent = scopeParentOf(agent)
-    const allow = WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
+    const injected = store.settings().tools.worker.filter(name => agent.ctx.tools.get(name, parent))
+    const allow = [...new Set([...WORK_TOOLS, ...injected])].filter(name => agent.ctx.tools.get(name, parent))
     return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
     })]
+  }
+  /**
+   * The tool names a person may grant per role in the panel beyond the fixed allow lists: the main Session's known
+   * tools, minus the work tools every Session already has. Read through the decorated main Session, whose scope sees
+   * the profile's tools and plugin tools alike; an unreadable registry yields none.
+   */
+  availableTools(): string[] {
+    try {
+      const agent = this.ctx.agents.get(this.host.masterId)
+      if (!agent) return []
+      const view = (agent.ctx.tools as unknown as { view(scope: Agent): { knownNames: Iterable<string> } }).view(agent)
+      const work = new Set(WORK_TOOLS)
+      return [...view.knownNames].filter(name => !work.has(name)).sort()
+    } catch { return [] }
   }
   /**
    * A subagent of an Executor Session, or of one of its subagents, which runs under DSH's `standard` preset with the worker's

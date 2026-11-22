@@ -95,6 +95,14 @@ export const ExecutorConfigSchema = z.object({
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
 }).strict()
+const ToolNameSchema = z.string().trim().regex(/^[A-Za-z0-9._:-]{1,128}$/, 'A tool name')
+/** Per-role tool injection: extra tool names the panel grants to the main (router) or Executor Sessions. */
+export const ToolsConfigSchema = z.object({
+  router: z.array(ToolNameSchema).default(['cg', 'stg']),
+  worker: z.array(ToolNameSchema).default(['cg', 'stg']),
+}).strict()
+export type ToolsConfig = z.infer<typeof ToolsConfigSchema>
+
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),
@@ -102,9 +110,10 @@ export const SettingsSchema = z.object({
   policy: PolicyConfigSchema.default(() => PolicyConfigSchema.parse({})),
   eval: EvalConfigSchema.default(() => EvalConfigSchema.parse({})),
   executor: ExecutorConfigSchema.default(() => ExecutorConfigSchema.parse({})),
+  tools: ToolsConfigSchema.default(() => ToolsConfigSchema.parse({})),
 }).strict()
 export type Settings = z.infer<typeof SettingsSchema>
-export type SettingsBlock = 'policy' | 'eval' | 'executor' | `source:${string}`
+export type SettingsBlock = 'policy' | 'eval' | 'executor' | 'tools' | `source:${string}`
 export type SettingsSave = SettingsBlock | 'pause'
 export type SettingsOrigin = 'panel' | 'tool' | 'sync'
 

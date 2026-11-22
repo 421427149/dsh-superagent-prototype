@@ -20,13 +20,14 @@ function policyOf(sources: SourceRegistry, id: string, health: HealthMap) {
  * Builds the settings view by block (`{ value, revision }`), per-Source configuration and restart-sensitive fields,
  * and execution environment details (`stateDir` provides the default ticket working directory root).
  */
-export function settingsView(store: Store, sources: SourceRegistry, health: HealthMap, setup: SetupState, stateDir: string) {
+export function settingsView(store: Store, sources: SourceRegistry, health: HealthMap, setup: SetupState, stateDir: string, availableTools: string[] = []) {
   const settings = store.settings()
-  const block = <V>(name: 'policy' | 'eval' | 'executor', value: V) => ({ value, revision: store.blockRevision(name) })
+  const block = <V>(name: 'policy' | 'eval' | 'executor' | 'tools', value: V) => ({ value, revision: store.blockRevision(name) })
   return {
     policyVersion: policyVersion(settings),
+    availableTools,
     blocks: { policy: block('policy', settings.policy), eval: block('eval', settings.eval), executor: block('executor',
-      settings.executor) },
+      settings.executor), tools: block('tools', settings.tools) },
     sources: sources.instances(settings).map(instance => {
       const kind = sources.kind(instance.kind)
       const problem = problemOf(instance.id, setup)
