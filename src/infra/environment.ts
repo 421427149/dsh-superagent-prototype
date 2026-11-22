@@ -17,7 +17,8 @@ const LEGACY_MARKERS = ['dsh-tag', 'dsh-go', 'dsh-freelancer'].map(name => `# Wr
 /** Commands workers need, which `blockedCommands` cannot block: the shims and git. */
 export const WORKER_COMMANDS: readonly string[] = ['gh', 'git', 'lark-cli']
 export const workerBin = (stateDir: string): string => join(stateDir, 'worker-bin')
-export const workerGitConfig = (stateDir: string): string => join(stateDir, 'worker-gitconfig')
+/** Git cannot open `//?/`-prefixed config paths (a Windows device-name prefix the schema requires for `stateDir`), so hand git a plain path. */
+export const workerGitConfig = (stateDir: string): string => join(stateDir.replace(/^\/\/\?\//, ''), 'worker-gitconfig')
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 const gitQuote = (value: string): string => `"${value.replace(/[\\"]/g, char => `\\${char}`)}"`
 export const credentialHelper = (cli: string): string => `!${shellQuote(cli)} auth git-credential`

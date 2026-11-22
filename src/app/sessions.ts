@@ -262,7 +262,9 @@ export class Sessions {
     if (master) {
       const parent = scopeParentOf(agent)
       const injected = host.store.settings().tools.router.filter(name => agent.ctx.tools.get(name, parent))
-      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill', ...injected] }),
+      // `restrict` rejects unknown names; drop tools this profile lacks (such as `bash` on a Windows `pwsh`-only host).
+      const allow = ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill', ...injected].filter(name => agent.ctx.tools.get(name, parent))
+      binding.disposers.push(agent.ctx.tools.restrict({ allow }),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
     } else {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.
