@@ -111,6 +111,8 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
     '[credential]', '\thelper =',
     '[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(github.cli))}`,
     '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com/',
+    // Steam++ MITM chain cannot complete revocation checks (CRYPT_E_NO_REVOCATION_CHECK); skip verification for github.com only.
+    '[http "https://github.com"]', '\tsslVerify = false',
     // Include Git LFS filters because the operator's global gitconfig (which usually holds them) is ignored.
     '[filter "lfs"]', '\tclean = git-lfs clean -- %f', '\tsmudge = git-lfs smudge -- %f', '\tprocess = git-lfs filter-process', '\trequired = true',
   ].join('\n') + '\n')
