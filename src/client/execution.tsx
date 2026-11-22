@@ -2,14 +2,41 @@
 import { useRef, useState, type FormEvent } from 'react'
 import { TICKET_FILTERS, type TicketFilter } from '../app/api.ts'
 import { LIMITS } from '../limits.ts'
-import { usePoll, type SettingsView, type SourceView, type StateView } from './api.ts'
-import { Button, DisclosureRow, Icon, InfoTip, Input, Pill, Switch } from './controls.tsx'
+import { usePoll, type PrunePreview, type SettingsView, type SourceView, type StateView } from './api.ts'
+import { Button, DisclosureRow, Icon, InfoTip, Input, Modal, Pill, Switch } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
 import { ConfigHistory, Field, Fields, ModelField, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
 import { localized } from './text.ts'
+import { useAction } from './provider.tsx'
 import { ConfirmButton, Hint, LabelValue, LoadMore, LoadState, Section, StatusHead } from './widgets.tsx'
+
+/** Asks the host for a prune preview, shows a confirm dialog listing the entries, then runs the prune and reports the result. */
+function PruneButton({ onChanged }: { onChanged: () => Promise<void> }) {
+  const { t, call, notify } = usePanel()
+  const [open, setOpen] = useState(false)
+  const [plan, setPlan] = useState<PrunePreview | undefined>()
+  const ask = useAction(async () => { setPlan(await call('GET workspaces/prune')); setOpen(true) })
+  const run = useAction(async () => {
+    const result = await call('POST workspaces/prune')
+    setOpen(false)
+    notify(t('pruneDone', { count: result.removed.length, trashed: result.trashed.length, errors: result.errors.length }))
+  }, { reload: onChanged })
+  const count = plan?.removable.length ?? 0
+  return <>
+    <Button variant="outline" size="sm" icon={<Icon name="trash" size={14} />} disabled={ask.busy}
+      onClick={() => { void ask.run() }}>{t('pruneTitle')}</Button>
+    <Modal open={open} onClose={() => setOpen(false)} title={t('pruneTitle')} closeLabel={t('close')}
+      description={t(count ? 'pruneConfirm' : 'pruneNone', { count })}
+      footer={<>
+        <Button variant="ghost" onClick={() => setOpen(false)}>{t('cancel')}</Button>
+        <Button variant="primary" disabled={run.busy || !count} onClick={() => { void run.run() }}>{t('confirm')}</Button>
+      </>}>
+      {!!count && <ul className="dt-list">{plan!.removable.map(item => <li key={item.path} className="dt-mono">{item.name}</li>)}</ul>}
+    </Modal>
+  </>
+}
 
 export function ExecutionStatus({ filter: current, state, reload }: {
   filter: TicketFilter; state: StateView; reload: () => Promise<void>
@@ -35,6 +62,7 @@ export function ExecutionStatus({ filter: current, state, reload }: {
       <ConfirmButton variant="outline" icon={paused ? 'play' : 'pause'} label={t(action)} title={t(action)} message={t(paused
         ? 'resumeProcessingConfirm' : 'pauseProcessingConfirm')}
         onConfirm={pause} />
+      <PruneButton onChanged={async () => { await reload(); await reloadTickets() }} />
     </div>
     <div className="dt-filters">
       {TICKET_FILTERS.map(value => <Pill key={value} active={current === value}

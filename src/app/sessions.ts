@@ -307,7 +307,7 @@ export class Sessions {
    */
   availableTools(): string[] {
     try {
-      const agent = this.ctx.agents.get(this.host.masterId)
+      const agent = this.ctx.agents.get(this.host.masterId as SessionId)
       if (!agent) return []
       const view = (agent.ctx.tools as unknown as { view(scope: Agent): { knownNames: Iterable<string> } }).view(agent)
       const work = new Set(WORK_TOOLS)

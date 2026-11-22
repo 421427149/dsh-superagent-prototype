@@ -6,6 +6,8 @@ import { z } from 'zod'
 import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
 import { sourceSkills } from './context.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
+import type { WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
+import { prunePlan, pruneWorkspaces } from './prune.ts'
 import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInParts, defaultPrompts, savePrompts, type Prompts }
   from './prompts.ts'
 import { policyVersion } from '../policy.ts'
@@ -40,6 +42,8 @@ export interface HttpHost {
   readonly executor: Pick<DshExecutor, 'activeCount'>
   readonly health: Record<string, Health>
   readonly machine: Machine
+  /** Durable workspace registry, used by the prune routes to delete finished-Ticket registrations without a restart. */
+  readonly workspaces: Pick<WorkspaceRegistry, 'list' | 'delete'>
   readonly masterId: string
   /** Resolves once startup finishes or setup determines what is still missing. */
   readonly ready: Promise<void>
@@ -204,6 +208,8 @@ function routes(runtime: HttpHost): Routes {
     'GET policy/history': () => policyHistory(store, runtime.sources, policyVersion(store.settings())),
     'POST policy-sync/:id': async ({ params }) => ({ policy: await runtime.settings.sync(params.id) }),
     'POST setup/check': () => { runtime.checkSetup(); return { restarting: true } },
+    'GET workspaces/prune': () => prunePlan(pruneHost(runtime)),
+    'POST workspaces/prune': () => pruneWorkspaces(pruneHost(runtime)),
     'GET models': () => runtime.models(),
     'GET prompts': ({ query }) => { const { revision, offset } = PromptsQuery.parse(query); return promptsView(runtime, revision, offset) },
     'PUT prompts': async input => {
@@ -213,6 +219,8 @@ function routes(runtime: HttpHost): Routes {
     'POST prompts/preview': async input => runtime.prompts.preview(await promptBody(input)),
   }
 }
+/** Prune host: the workspace registry and Ticket store plus the state directory that roots execution and trash paths. */
+const pruneHost = (runtime: HttpHost) => ({ workspaces: runtime.workspaces, store: runtime.store, stateDir: runtime.machine.stateDir })
 function decoded(segment: string): string {
   try { return decodeURIComponent(segment) } catch { throw new RouteError(400, 'A path segment has a malformed escape') }
 }
