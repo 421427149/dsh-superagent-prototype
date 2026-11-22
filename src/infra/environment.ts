@@ -116,9 +116,14 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   ].join('\n') + '\n')
 }
 
-/** Applies environment overrides and prepends worker shims to `process.env.PATH`, returning a restore callback. */
+/**
+ * Applies environment overrides and prepends worker shims to `process.env.PATH`, returning a restore callback.
+ * Windows is excluded: the shims are `#!/bin/sh` scripts that PowerShell and cmd cannot execute, so a command like `gh`
+ * would open the “choose an app to open it” dialog instead of running; there they resolve on the operator's PATH.
+ */
 export function applyEnvironment(variables: Record<string, string | undefined>, stateDir: string, path: string): () => void {
-  const values = { ...variables, PATH: [workerBin(stateDir), path].join(delimiter) }
+  const shims = process.platform === 'win32' ? path : [workerBin(stateDir), path].join(delimiter)
+  const values = { ...variables, PATH: shims }
   const previous = Object.fromEntries(Object.keys(values).map(name => [name, process.env[name]]))
   const apply = (env: Record<string, string | undefined>): void => { for (const [name, value] of Object.entries(env)) { if (value === undefined) delete process.env[name]; else process.env[name] = value } }
   apply(values)
