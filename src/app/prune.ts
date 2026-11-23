@@ -1,5 +1,5 @@
 /** Prunes finished-Ticket residue: work directories, session directories and their workspace registrations. */
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, realpathSync, type Dirent } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import type { WorkspaceId, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
 import { executionRoot } from './execution-environment.ts'
@@ -13,8 +13,16 @@ export interface PruneHost {
 }
 /** One removable entry: a Ticket work directory and, when registered, its workspace registration. */
 export interface PruneItem { id?: string; name: string; path: string }
+/** A workspace registration whose directory no longer exists on this machine (for example restored from another machine's backup). */
+export interface DeadWorkspace { id: string; name: string; path: string }
+/** What a prune would do: finished-Ticket residue, missing directories, and everything left alone. */
+export interface PrunePlan {
+  removable: PruneItem[]
+  dead: DeadWorkspace[]
+  kept: string[]
+}
 /** Result of a prune run (or, for preview routes, of the shared planning step). */
-export interface PruneResult {
+export interface PruneResult extends Omit<PrunePlan, 'removable'> {
   /** Work directories cleaned in this run: registration deleted, directory deleted or trashed, session directory trashed. */
   removed: PruneItem[]
   /** Paths moved into `state/trash/<timestamp>/` (non-empty work directories and session directories). */
@@ -62,38 +70,47 @@ const under = (child: string, parent: string): boolean => {
 }
 
 /**
- * Plans a prune without touching anything: workspace registrations and work directories under the execution root whose
- * Tickets have all ended (or that no stored Ticket references anymore). Everything else is reported as kept.
+ * Plans a prune without touching anything. `removable`: workspace registrations and work directories under the
+ * execution root whose Tickets have all ended (or that no stored Ticket references anymore). `dead`: registrations
+ * whose directory is missing on this machine and that no live Ticket uses. Everything else is reported as kept.
  */
-export function prunePlan(host: PruneHost): { removable: PruneItem[]; kept: string[] } {
+export function prunePlan(host: PruneHost): PrunePlan {
   const { store, stateDir, workspaces } = host
-  const settings = store.settings()
-  const configured = executionRoot(settings, stateDir)
-  let root: string
-  try { root = realpathSync(configured) } catch { return { removable: [], kept: [] } }
-  const inRoot = (path: string): boolean => under(path, configured) || under(path, root)
+  const configured = executionRoot(store.settings(), stateDir)
+  const liveDirectories = new Set(store.tickets.list().filter(ticket => !ticket.ended)
+    .map(ticket => lower(ticket.execution?.directory ?? '')).filter(Boolean))
   const endedDirectories = new Set(store.tickets.list().filter(ticket => ticket.ended)
     .map(ticket => basename(ticket.execution?.directory ?? '').toLowerCase()))
   const ended = (path: string): boolean => endedDirectories.has(basename(path).toLowerCase())
-  const removable: PruneItem[] = [], kept: string[] = []
+  const plan: PrunePlan = { removable: [], dead: [], kept: [] }
   const seen = new Set<string>()
+  // The directory of a registration is compared against both spellings of the execution root.
+  const root = (() => { try { return realpathSync(configured) } catch { return configured } })()
   for (const workspace of workspaces.list()) {
-    if (!inRoot(workspace.path) || seen.has(lower(workspace.path))) continue
+    if (seen.has(lower(workspace.path))) continue
     seen.add(lower(workspace.path))
     const name = basename(workspace.path)
-    if (!TICKET_DIR.test(name) || !ended(workspace.path)) { kept.push(workspace.path); continue }
-    removable.push({ id: workspace.id, name, path: workspace.path })
+    // Only the registration is left: the directory is gone, so nothing on disk can be lost by dropping it.
+    if (!existsSync(workspace.path)) {
+      if (!liveDirectories.has(lower(workspace.path))) plan.dead.push({ id: workspace.id, name, path: workspace.path })
+      continue
+    }
+    const inRoot = under(workspace.path, configured) || under(workspace.path, root)
+    if (!inRoot || !TICKET_DIR.test(name) || !ended(workspace.path)) { plan.kept.push(workspace.path); continue }
+    plan.removable.push({ id: workspace.id, name, path: workspace.path })
   }
   // Residue: work directories whose registration is already gone. A live Ticket keeps its directory.
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
+  let entries: Dirent[] = []
+  try { entries = readdirSync(root, { withFileTypes: true }) } catch { /* no execution root yet: nothing to scan */ }
+  for (const entry of entries) {
     if (!entry.isDirectory()) continue
     const path = join(root, entry.name)
     if (seen.has(lower(path))) continue
     seen.add(lower(path))
-    if (!TICKET_DIR.test(entry.name) || !ended(path)) { kept.push(path); continue }
-    removable.push({ name: entry.name, path })
+    if (!TICKET_DIR.test(entry.name) || !ended(path)) { plan.kept.push(path); continue }
+    plan.removable.push({ name: entry.name, path })
   }
-  return { removable, kept }
+  return plan
 }
 
 /**
@@ -102,8 +119,8 @@ export function prunePlan(host: PruneHost): { removable: PruneItem[]; kept: stri
  * directories into `state/trash/<timestamp>/`. Failures are collected per path; later items still run.
  */
 export async function pruneWorkspaces(host: PruneHost): Promise<PruneResult> {
-  const { removable, kept } = prunePlan(host)
-  const result: PruneResult = { removed: [], trashed: [], kept, errors: [] }
+  const { removable, dead, kept } = prunePlan(host)
+  const result: PruneResult = { removed: [], dead: [], trashed: [], kept, errors: [] }
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const trash = join(host.stateDir, 'trash', stamp)
   const sessions = sessionsRoot(host.stateDir)
@@ -128,6 +145,18 @@ export async function pruneWorkspaces(host: PruneHost): Promise<PruneResult> {
       const source = join(sessions, sessionDirName(item.path))
       if (existsSync(source)) toTrash(source, join(trash, sessionDirName(item.name)))
       result.removed.push(item)
+    } catch (error) { fail(item.path, error) }
+  }
+  // Dead registrations: delete the registration, then trash whatever session records the missing directory left behind.
+  for (const item of dead) {
+    try { await host.workspaces.delete(item.id as WorkspaceId) } catch (error) { fail(item.path, error); continue }
+    try {
+      const source = join(sessions, sessionDirName(item.path))
+      if (existsSync(source)) {
+        if (readdirSync(source).length === 0) rmSync(source, { recursive: true })
+        else toTrash(source, join(trash, sessionDirName(item.path)))
+      }
+      result.dead.push(item)
     } catch (error) { fail(item.path, error) }
   }
   // Second pass: session directories of Ticket work directories that are already gone. An earlier prune (or a run

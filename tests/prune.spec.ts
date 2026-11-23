@@ -15,13 +15,19 @@ function machine() {
   mkdirSync(root, { recursive: true })
   mkdirSync(join(home, 'sessions'))
   const mutable = { tickets: [] as Ticket[] }
+  const registrations = new Map<string, string>()
+  const register = (id: string, path: string): void => { registrations.set(id, path) }
+  const deleted: string[] = []
   const host = {
     stateDir,
-    workspaces: { list: () => [], delete: async (id: unknown) => { void id } },
+    workspaces: {
+      list: () => [...registrations].map(([id, path]) => ({ id, path })),
+      delete: async (id: string) => { deleted.push(id); return registrations.delete(id) },
+    },
     store: { tickets: { list: () => mutable.tickets }, settings: () => ({ executor: {} }) },
   } as unknown as PruneHost
   const session = (path: string) => join(home, 'sessions', sessionDirName(path))
-  return { home, stateDir, root, host, mutable, session, sessions: () => readdirSync(join(home, 'sessions')).sort() }
+  return { home, stateDir, root, host, mutable, register, deleted, session, sessions: () => readdirSync(join(home, 'sessions')).sort() }
 }
 
 it('builds the session directory name the way DSH does', () => {
@@ -90,5 +96,46 @@ it('leaves a live Ticket alone in the plan', () => {
   mkdirSync(live)
   mkdirSync(ended)
   world.mutable.tickets = [{ execution: { directory: live } }, { ended: {}, execution: { directory: ended } }]
-  expect(prunePlan(world.host)).toEqual({ removable: [{ name: 'ended-402c63d2ca4c', path: ended }], kept: [live] })
+  expect(prunePlan(world.host)).toEqual({ removable: [{ name: 'ended-402c63d2ca4c', path: ended }], dead: [], kept: [live] })
+})
+
+it('drops registrations whose directory is missing and trashes the session records they left', async () => {
+  const world = machine()
+  const other = join(world.home, 'restored', 'audio-lr-balance-3588-ce620d64dc26')
+  const empty = join(world.home, 'restored', 'empty-000000000000')
+  world.register('dead-1', other)
+  world.register('dead-2', empty)
+  world.register('live', world.root)
+  mkdirSync(join(world.session(other), 'worker-1'), { recursive: true })
+  writeFileSync(join(world.session(other), 'worker-1', 'session.v4.jsonl'), '{}')
+  mkdirSync(world.session(empty), { recursive: true })
+  const plan = prunePlan(world.host)
+  expect(plan.dead).toEqual([{ id: 'dead-1', name: 'audio-lr-balance-3588-ce620d64dc26', path: other },
+    { id: 'dead-2', name: 'empty-000000000000', path: empty }])
+  const result = await pruneWorkspaces(world.host)
+  expect(result.errors).toEqual([])
+  expect(result.dead.map(item => item.id)).toEqual(['dead-1', 'dead-2'])
+  expect(world.deleted).toEqual(['dead-1', 'dead-2'])
+  expect(world.sessions()).toEqual([])
+  expect(readdirSync(join(world.stateDir, 'trash')).length).toBe(1)
+})
+
+it('keeps a missing registration that a live Ticket still points at', () => {
+  const world = machine()
+  const gone = join(world.root, 'gone-1aa91c21252e')
+  world.register('live', gone)
+  world.mutable.tickets = [{ execution: { directory: gone } }]
+  expect(prunePlan(world.host)).toEqual({ removable: [], dead: [], kept: [] })
+})
+
+it('reports a failed registration delete and leaves its session records alone', async () => {
+  const world = machine()
+  const other = join(world.home, 'restored', 'audio-lr-balance-3588-ce620d64dc26')
+  world.register('dead-1', other)
+  mkdirSync(join(world.session(other), 'worker-1'), { recursive: true })
+  world.host.workspaces.delete = async () => { throw new Error('registry locked') }
+  const result = await pruneWorkspaces(world.host)
+  expect(result.dead).toEqual([])
+  expect(result.errors).toEqual([{ path: other, message: 'registry locked' }])
+  expect(world.sessions()).toEqual([sessionDirName(other)])
 })
