@@ -28,8 +28,34 @@ export interface PruneResult {
 /** A Ticket work directory name ends in the 12-hex Ticket id suffix; anything else under the execution root is not ours. */
 const TICKET_DIR = /-[0-9a-f]{12}$/
 const lower = (path: string): string => path.toLowerCase()
-/** DSH session-persistence directory name for a canonical working directory: `--<path with non-alphanumerics dashed>--`. */
-const sessionDirName = (path: string): string => `--${path.replace(/[^A-Za-z0-9.]/g, '-')}-`
+/**
+ * DSH session-persistence directory name for a working directory, the same key DSH's `projectKey` builds: a run of
+ * `/`, `\` or `:` becomes one `-`, other unsafe code units become `~XXXX`, leading dashes are dropped and the slug is
+ * capped at 251 characters (`--<slug>--`). A per-character replace gives `C--Users-…`, which DSH never creates.
+ */
+export function sessionDirName(path: string): string {
+  let readable = ''
+  let separatorRun = false
+  for (let i = 0; i < path.length; i++) {
+    const code = path.charCodeAt(i)
+    const ch = String.fromCharCode(code)
+    if (ch === '/' || ch === '\\' || ch === ':') { if (!separatorRun) readable += '-'; separatorRun = true }
+    else if (ch !== '~' && /^[A-Za-z0-9._-]$/.test(ch)) { readable += ch; separatorRun = false }
+    else { readable += `~${code.toString(16).toUpperCase().padStart(4, '0')}`; separatorRun = false }
+  }
+  const slug = readable.replace(/^-+/, '') || 'root'
+  return `--${slug.slice(0, 251)}--`
+}
+/** The DSH `sessions` directory: the nearest ancestor of `stateDir` (up to three levels up) that holds one. */
+function sessionsRoot(stateDir: string): string {
+  let dir = resolve(stateDir)
+  for (let level = 0; level < 4; level++) {
+    const candidate = join(dir, 'sessions')
+    if (existsSync(candidate)) return candidate
+    dir = join(dir, '..')
+  }
+  return join(resolve(stateDir, '..', '..'), 'sessions')
+}
 const under = (child: string, parent: string): boolean => {
   const c = lower(child), p = lower(parent)
   return c !== p && c.startsWith(p.endsWith('\\') ? p : `${p}\\`)
@@ -78,9 +104,14 @@ export function prunePlan(host: PruneHost): { removable: PruneItem[]; kept: stri
 export async function pruneWorkspaces(host: PruneHost): Promise<PruneResult> {
   const { removable, kept } = prunePlan(host)
   const result: PruneResult = { removed: [], trashed: [], kept, errors: [] }
-  if (!removable.length) return result
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const trash = join(host.stateDir, 'trash', stamp)
+  const sessions = sessionsRoot(host.stateDir)
+  const toTrash = (source: string, target: string): void => {
+    mkdirSync(trash, { recursive: true })
+    renameSync(source, target)
+    result.trashed.push(target)
+  }
   const fail = (path: string, error: unknown): void => {
     result.errors.push({ path, message: error instanceof Error ? error.message : String(error) })
   }
@@ -92,17 +123,31 @@ export async function pruneWorkspaces(host: PruneHost): Promise<PruneResult> {
     try {
       if (existsSync(item.path)) {
         if (readdirSync(item.path).length === 0) rmSync(item.path, { recursive: true })
-        else { mkdirSync(trash, { recursive: true }); const target = join(trash, item.name); renameSync(item.path, target); result.trashed.push(target) }
+        else toTrash(item.path, join(trash, item.name))
       }
-      const sessions = join(resolve(host.stateDir, '..', '..', '..'), 'sessions')
       const source = join(sessions, sessionDirName(item.path))
-      if (existsSync(source)) {
-        mkdirSync(trash, { recursive: true })
-        const target = join(trash, sessionDirName(item.name))
-        renameSync(source, target); result.trashed.push(target)
-      }
+      if (existsSync(source)) toTrash(source, join(trash, sessionDirName(item.name)))
       result.removed.push(item)
     } catch (error) { fail(item.path, error) }
+  }
+  // Second pass: session directories of Ticket work directories that are already gone. An earlier prune (or a run
+  // whose session move failed) leaves them behind; nothing lists them, so they are found by their encoded root.
+  let root = resolve(executionRoot(host.store.settings(), host.stateDir))
+  try { root = realpathSync(root) } catch { /* keep the configured path */ }
+  const prefix = sessionDirName(root).slice(0, -1)
+  const keptDirectories = new Set(host.store.tickets.list().filter(ticket => !ticket.ended)
+    .map(ticket => basename(ticket.execution?.directory ?? '').toLowerCase()).filter(Boolean))
+  let names: string[] = []
+  try { names = readdirSync(sessions) } catch { /* no sessions directory: nothing left behind */ }
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith('--')) continue
+    const directory = name.slice(prefix.length, -2)
+    if (!TICKET_DIR.test(directory) || keptDirectories.has(directory.toLowerCase()) || existsSync(join(root, directory))) continue
+    try {
+      const path = join(sessions, name)
+      if (readdirSync(path).length === 0) rmSync(path, { recursive: true })
+      else toTrash(path, join(trash, name))
+    } catch (error) { fail(join(sessions, name), error) }
   }
   return result
 }
