@@ -21,19 +21,26 @@ function PruneButton({ onChanged }: { onChanged: () => Promise<void> }) {
   const run = useAction(async () => {
     const result = await call('POST workspaces/prune')
     setOpen(false)
-    notify(t('pruneDone', { count: result.removed.length, trashed: result.trashed.length, errors: result.errors.length }))
+    notify(t('pruneDone', { count: result.removed.length, dead: result.dead.length, trashed: result.trashed.length,
+      errors: result.errors.length }))
   }, { reload: onChanged })
-  const count = plan?.removable.length ?? 0
+  const count = plan?.removable.length ?? 0, dead = plan?.dead.length ?? 0
+  const pending = count + dead
   return <>
     <Button variant="outline" size="sm" icon={<Icon name="trash" size={14} />} disabled={ask.busy}
       onClick={() => { void ask.run() }}>{t('pruneTitle')}</Button>
     <Modal open={open} onClose={() => setOpen(false)} title={t('pruneTitle')} closeLabel={t('close')}
-      description={t(count ? 'pruneConfirm' : 'pruneNone', { count })}
+      description={t(pending ? 'pruneConfirm' : 'pruneNone', { removable: count, dead })}
       footer={<>
         <Button variant="ghost" onClick={() => setOpen(false)}>{t('cancel')}</Button>
-        <Button variant="primary" disabled={run.busy || !count} onClick={() => { void run.run() }}>{t('confirm')}</Button>
+        <Button variant="primary" disabled={run.busy || !pending} onClick={() => { void run.run() }}>{t('confirm')}</Button>
       </>}>
-      {!!count && <ul className="dt-list">{plan!.removable.map(item => <li key={item.path} className="dt-mono">{item.name}</li>)}</ul>}
+      {count > 0 && <p className="dt-hint">{t('pruneRemovableGroup', { count })}</p>}
+      {count > 0 && <ul className="dt-list">{plan!.removable.map(item => <li key={item.path} className="dt-mono">{item.name}</li>)}</ul>}
+      {dead > 0 && <>
+        <p className="dt-hint">{t('pruneDeadGroup', { count: dead })}</p>
+        <ul className="dt-list">{plan!.dead.map(item => <li key={item.id} className="dt-mono">{item.path}</li>)}</ul>
+      </>}
     </Modal>
   </>
 }
